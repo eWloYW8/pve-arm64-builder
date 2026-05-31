@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-ROOT=${ROOT:-/workspaces/pve}
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+ROOT=${ROOT:-$(dirname "${SCRIPT_DIR}")}
 SRC_DIR=${SRC_DIR:-${ROOT}/src}
 OUT_DIR=${OUT_DIR:-${ROOT}/out/arm64}
 LOG_DIR=${LOG_DIR:-${ROOT}/logs/pve-arm64}
-PLAN_FILE=${PLAN_FILE:-${ROOT}/pve-devcontainer/pve-source-plan.txt}
-PLAN_SCRIPT=${PLAN_SCRIPT:-${ROOT}/pve-devcontainer/plan_pve_sources.py}
-RELAX_DEPS_SCRIPT=${RELAX_DEPS_SCRIPT:-${ROOT}/pve-devcontainer/relax_pve_dependencies.py}
+PLAN_FILE=${PLAN_FILE:-${SCRIPT_DIR}/pve-source-plan.txt}
+PLAN_SCRIPT=${PLAN_SCRIPT:-${SCRIPT_DIR}/plan_pve_sources.py}
+RELAX_DEPS_SCRIPT=${RELAX_DEPS_SCRIPT:-${SCRIPT_DIR}/relax_pve_dependencies.py}
 MAX_PASSES=${MAX_PASSES:-4}
 JOBS=${JOBS:-$(nproc)}
 BUILD_ARCH=${BUILD_ARCH:-amd64}

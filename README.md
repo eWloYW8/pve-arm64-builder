@@ -4,32 +4,32 @@
 
 ## 构建开发容器
 
-在 `pve-devcontainer` 仓库目录内执行：
+在 `pve-arm64-builder` 仓库目录内执行：
 
 ```bash
-docker build -t pve-devcontainer:trixie .
+docker build -t pve-arm64-builder:trixie .
 ```
 
-后台运行容器，并把 `pve-devcontainer` 的父目录挂载到 `/workspaces/pve`：
+后台运行容器，并把 `pve-arm64-builder` 的父目录挂载到 `/workspaces/pve`：
 
 ```bash
-docker run -d --name pve-devcontainer \
+docker run -d --name pve-arm64-builder \
   -v "$(dirname "$PWD"):/workspaces/pve" \
   -w /workspaces/pve \
-  pve-devcontainer:trixie \
+  pve-arm64-builder:trixie \
   sleep infinity
 ```
 
 进入容器：
 
 ```bash
-docker exec -it pve-devcontainer bash
+docker exec -it pve-arm64-builder bash
 ```
 
 ## 构建 PVE arm64 包
 
 ```bash
-docker exec pve-devcontainer bash -lc '/workspaces/pve/pve-devcontainer/build_pve_arm64.sh'
+docker exec pve-arm64-builder bash -lc '/workspaces/pve/pve-arm64-builder/build_pve_arm64.sh'
 ```
 
 输出目录：
