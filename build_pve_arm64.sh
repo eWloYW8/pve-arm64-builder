@@ -60,6 +60,14 @@ prepare_apt() {
         run_root dpkg --add-architecture "${HOST_ARCH}"
     fi
 
+    if [[ ! -f "${OUT_DIR}/Packages" ]]; then
+        : > "${OUT_DIR}/Packages"
+        gzip -9c < "${OUT_DIR}/Packages" > "${OUT_DIR}/Packages.gz"
+        chmod a+r "${OUT_DIR}/Packages" "${OUT_DIR}/Packages.gz"
+    fi
+    printf '%s\n' "deb [trusted=yes] file:${OUT_DIR} ./" \
+        | run_root tee /etc/apt/sources.list.d/local-pve-arm64.list >/dev/null
+
     run_root apt-get -o APT::Sandbox::User=root update
     run_root apt-get install -y --no-install-recommends \
         autoconf \
@@ -75,6 +83,7 @@ prepare_apt() {
         debhelper \
         devscripts \
         dh-python \
+        docbook2x \
         doxygen \
         doxygen2man \
         dpkg-dev \
@@ -89,6 +98,7 @@ prepare_apt() {
         librust-cidr-dev \
         librust-crossbeam-channel-dev \
         librust-pam-sys-dev \
+        librust-pathpatterns-dev \
         librust-proxmox-docgen-dev \
         librust-proxmox-ldap-dev \
         librust-proxmox-metrics-dev \
@@ -97,7 +107,9 @@ prepare_apt() {
         librust-proxmox-rest-server-dev \
         librust-proxmox-rrd-dev \
         librust-proxmox-upgrade-checks-dev \
+        librust-pxar-dev \
         librust-udev-dev \
+        librust-xdg-dev \
         python3-sphinx \
         python3-sphinx-rtd-theme \
         python3-venv \
@@ -105,7 +117,6 @@ prepare_apt() {
         meson \
         ninja-build \
         pkgconf \
-        pve-doc-generator \
         proxmox-wasm-builder \
         python3 \
         python3-pip \
@@ -379,7 +390,9 @@ source_subdir_for() {
 }
 
 load_sources() {
-    python3 "${PLAN_SCRIPT}" > "${PLAN_FILE}"
+    if [[ "${REGENERATE_PLAN:-0}" == 1 || ! -s "${PLAN_FILE}" ]]; then
+        python3 "${PLAN_SCRIPT}" > "${PLAN_FILE}"
+    fi
     awk '
         $0 == "# source packages" { in_sources = 1; next }
         in_sources && NF { print $1 }
@@ -561,7 +574,7 @@ reset_git_tree_for_dir() {
     fi
 
     git -C "${git_root}" reset --hard HEAD
-    git -C "${git_root}" clean -fdx
+    git -C "${git_root}" clean -ffdx
     git -C "${git_root}" submodule update --init --recursive || true
 }
 
@@ -571,8 +584,8 @@ native_qualify_rust_build_deps() {
     perl -0pi -e '
         s/^(Build-Depends(?:-[^:]+)?:\s.*?)(?=^\S|\z)/
             my $field = $1;
-            $field =~ s#\b(librust-[A-Za-z0-9+_.-]+)(?=\s*(?:\(|,|\n|$))#$1:native#g;
-            $field =~ s#\b(cargo|debcargo|dh-cargo|dh-python|esbuild|libstd-rust-dev|mypy|perlmod-bin|proxmox-biome|proxmox-frr-templates|proxmox-wasm-builder|python3|python3-pyvmomi|rust-grass|rust-llvm|rustc|libproxmox-rs-perl)(?=\s*(?:\(|,|\n|$))#$1:native#g;
+            $field =~ s#\b(librust-[A-Za-z0-9+_.-]+)(?=\s*(?:\(|<|,|\n|$))#$1:native#g;
+            $field =~ s#\b(cargo|debcargo|dh-cargo|dh-python|esbuild|libstd-rust-dev|mypy|patchelf|perlmod-bin|proxmox-biome|proxmox-frr-templates|proxmox-wasm-builder|proxmox-widget-toolkit-dev|python3|python3-docutils|python3-pygments|python3-pyvmomi|python3-sphinx|rsync|rust-grass|rust-llvm|rustc|libproxmox-rs-perl)(?=\s*(?:\(|<|,|\n|$))#$1:native#g;
             $field;
         /egms;
     ' "${control}"
@@ -887,6 +900,12 @@ apply_source_fixes() {
                 perl -0pi -e 's/\blibcrypt-openssl-guess-perl\b/libcrypt-openssl-guess-perl:native/g' "${dir}/debian/control"
             fi
             ;;
+        libproxmox-acme)
+            rm -rf "${dir}/libproxmox-acme-"*
+            if [[ -f "${dir}/Makefile" ]]; then
+                sed -i 's/rm -rf $(BUILDDIR).tmp/rm -rf $(BUILDDIR) $(BUILDDIR).tmp/' "${dir}/Makefile"
+            fi
+            ;;
         libpve-rs-perl)
             if [[ -f "${dir}/debian/control" ]]; then
                 native_qualify_rust_build_deps "${dir}/debian/control"
@@ -988,6 +1007,12 @@ apply_source_fixes() {
             fi
             ;;
         pve-ha-manager)
+            refresh_local_repo
+            run_root apt-get install -y --no-install-recommends libpve-common-perl || {
+                local pve_common_deb
+                pve_common_deb=$(ls -1 "${OUT_DIR}"/libpve-common-perl_*.deb | sort -V | tail -1)
+                run_root dpkg -i "${pve_common_deb}" || run_root apt-get -f install -y
+            }
             if [[ -f "${dir}/src/Makefile" ]]; then
                 replace_make_targets_with_placeholders \
                     "${dir}/src/Makefile" \
@@ -1131,6 +1156,12 @@ apply_source_fixes() {
                     -e 's/pkg-config --/$(PKG_CONFIG) --/g' \
                     "${dir}/src/PVE/Makefile"
             fi
+            local pmxcfs_makefile
+            for pmxcfs_makefile in "${dir}/pmxcfs/Makefile" "${dir}/src/pmxcfs/Makefile"; do
+                if [[ -f "${pmxcfs_makefile}" ]]; then
+                    perl -0pi -e 's/^pmxcfs\.8:\n\n/pmxcfs.8:\n\tprintf ".TH pmxcfs 8\\n.SH NAME\\npmxcfs - Proxmox VE cluster filesystem\\n" > \$@\n\n/m' "${pmxcfs_makefile}"
+                fi
+            done
             ;;
         rrdtool)
             if [[ -f "${dir}/debian/control" ]]; then
@@ -1154,6 +1185,8 @@ apply_source_fixes() {
                     || printf '%s\n' 'usr/share/rrdtool/examples/stripes.py' >> "${dir}/debian/not-installed"
             fi
             if [[ -f "${dir}/debian/rules" ]]; then
+                grep -q '^export rd_cv_ms_async=' "${dir}/debian/rules" \
+                    || sed -i '1a export rd_cv_ms_async=ok' "${dir}/debian/rules"
                 perl -0pi -e '
                     s/--with lua,python3,ruby/--with ruby/g;
                     s/--with lua,ruby/--with ruby/g;
@@ -1187,58 +1220,71 @@ apply_source_fixes() {
                 native_qualify_rust_build_deps "${dir}/debian/control"
                 perl -0pi -e 's/^\s*librust-cidr-0\.3\+default-dev(?::native)?[^\n]*,\n//mg' "${dir}/debian/control"
                 perl -0pi -e 's/^\s*librust-proxmox-rest-server-1\+(?:rate-limited-stream|templates)-dev(?::native)?[^\n]*,\n//mg' "${dir}/debian/control"
+                perl -0pi -e 's/^\s*texlive-(?:fonts-extra|fonts-recommended|xetex)[^\n]*,\n//mg' "${dir}/debian/control"
             fi
             if [[ -f "${dir}/debian/rules" ]] && ! grep -q 'cidr-.*debian/cargo_registry' "${dir}/debian/rules"; then
                 sed -i '/prepare-debian/a\
-	for crate in /usr/share/cargo/registry/cidr-*; do [ -e "$$crate" ] && ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
+	for crate in /usr/share/cargo/registry/cidr-*; do [ -e "$$crate" ] || continue; ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
+            fi
+            if [[ -f "${dir}/debian/rules" ]] && ! grep -q 'registry/\*.*debian/cargo_registry' "${dir}/debian/rules"; then
+                sed -i '/prepare-debian/a\
+	for crate in /usr/share/cargo/registry/*; do [ -f "$$crate/Cargo.toml" ] || continue; ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
             fi
             if [[ -f "${dir}/debian/rules" ]] && ! grep -q 'crossbeam-channel-.*debian/cargo_registry' "${dir}/debian/rules"; then
                 sed -i '/prepare-debian/a\
-	for crate in /usr/share/cargo/registry/crossbeam-channel-*; do [ -e "$$crate" ] && ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
+	for crate in /usr/share/cargo/registry/crossbeam-channel-*; do [ -e "$$crate" ] || continue; ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
             fi
             if [[ -f "${dir}/debian/rules" ]] && ! grep -q 'pathpatterns-.*debian/cargo_registry' "${dir}/debian/rules"; then
                 sed -i '/prepare-debian/a\
-	for crate in /usr/share/cargo/registry/pathpatterns-*; do [ -e "$$crate" ] && ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
+	for crate in /usr/share/cargo/registry/pathpatterns-*; do [ -e "$$crate" ] || continue; ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
+            fi
+            if [[ -f "${dir}/debian/rules" ]] && ! grep -q 'pxar-.*debian/cargo_registry' "${dir}/debian/rules"; then
+                sed -i '/prepare-debian/a\
+	for crate in /usr/share/cargo/registry/pxar-*; do [ -e "$$crate" ] || continue; ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
+            fi
+            if [[ -f "${dir}/debian/rules" ]] && ! grep -q 'xdg-.*debian/cargo_registry' "${dir}/debian/rules"; then
+                sed -i '/prepare-debian/a\
+	for crate in /usr/share/cargo/registry/xdg-*; do [ -e "$$crate" ] || continue; ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
             fi
             if [[ -f "${dir}/debian/rules" ]] && ! grep -q 'pam-sys-.*debian/cargo_registry' "${dir}/debian/rules"; then
                 sed -i '/prepare-debian/a\
-	for crate in /usr/share/cargo/registry/pam-sys-*; do [ -e "$$crate" ] && ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
+	for crate in /usr/share/cargo/registry/pam-sys-*; do [ -e "$$crate" ] || continue; ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
             fi
             if [[ -f "${dir}/debian/rules" ]] && ! grep -q 'udev-.*debian/cargo_registry' "${dir}/debian/rules"; then
                 sed -i '/prepare-debian/a\
-	for crate in /usr/share/cargo/registry/udev-*; do [ -e "$$crate" ] && ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
+	for crate in /usr/share/cargo/registry/udev-*; do [ -e "$$crate" ] || continue; ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
             fi
             if [[ -f "${dir}/debian/rules" ]] && ! grep -q 'proxmox-rest-server-.*debian/cargo_registry' "${dir}/debian/rules"; then
                 sed -i '/prepare-debian/a\
-	for crate in /usr/share/cargo/registry/proxmox-rest-server-*; do [ -e "$$crate" ] && ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
+	for crate in /usr/share/cargo/registry/proxmox-rest-server-*; do [ -e "$$crate" ] || continue; ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
             fi
             if [[ -f "${dir}/debian/rules" ]] && ! grep -q 'proxmox-docgen-.*debian/cargo_registry' "${dir}/debian/rules"; then
                 sed -i '/prepare-debian/a\
-	for crate in /usr/share/cargo/registry/proxmox-docgen-*; do [ -e "$$crate" ] && ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
+	for crate in /usr/share/cargo/registry/proxmox-docgen-*; do [ -e "$$crate" ] || continue; ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
             fi
             if [[ -f "${dir}/debian/rules" ]] && ! grep -q 'proxmox-ldap-.*debian/cargo_registry' "${dir}/debian/rules"; then
                 sed -i '/prepare-debian/a\
-	for crate in /usr/share/cargo/registry/proxmox-ldap-*; do [ -e "$$crate" ] && ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
+	for crate in /usr/share/cargo/registry/proxmox-ldap-*; do [ -e "$$crate" ] || continue; ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
             fi
             if [[ -f "${dir}/debian/rules" ]] && ! grep -q 'proxmox-metrics-.*debian/cargo_registry' "${dir}/debian/rules"; then
                 sed -i '/prepare-debian/a\
-	for crate in /usr/share/cargo/registry/proxmox-metrics-*; do [ -e "$$crate" ] && ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
+	for crate in /usr/share/cargo/registry/proxmox-metrics-*; do [ -e "$$crate" ] || continue; ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
             fi
             if [[ -f "${dir}/debian/rules" ]] && ! grep -q 'proxmox-openid-.*debian/cargo_registry' "${dir}/debian/rules"; then
                 sed -i '/prepare-debian/a\
-	for crate in /usr/share/cargo/registry/proxmox-openid-*; do [ -e "$$crate" ] && ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
+	for crate in /usr/share/cargo/registry/proxmox-openid-*; do [ -e "$$crate" ] || continue; ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
             fi
             if [[ -f "${dir}/debian/rules" ]] && ! grep -q 'proxmox-parallel-handler-.*debian/cargo_registry' "${dir}/debian/rules"; then
                 sed -i '/prepare-debian/a\
-	for crate in /usr/share/cargo/registry/proxmox-parallel-handler-*; do [ -e "$$crate" ] && ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
+	for crate in /usr/share/cargo/registry/proxmox-parallel-handler-*; do [ -e "$$crate" ] || continue; ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
             fi
             if [[ -f "${dir}/debian/rules" ]] && ! grep -q 'proxmox-upgrade-checks-.*debian/cargo_registry' "${dir}/debian/rules"; then
                 sed -i '/prepare-debian/a\
-	for crate in /usr/share/cargo/registry/proxmox-upgrade-checks-*; do [ -e "$$crate" ] && ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
+	for crate in /usr/share/cargo/registry/proxmox-upgrade-checks-*; do [ -e "$$crate" ] || continue; ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
             fi
             if [[ -f "${dir}/debian/rules" ]] && ! grep -q 'proxmox-rrd-.*debian/cargo_registry' "${dir}/debian/rules"; then
                 sed -i '/prepare-debian/a\
-	for crate in /usr/share/cargo/registry/proxmox-rrd-*; do [ -e "$$crate" ] && ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
+	for crate in /usr/share/cargo/registry/proxmox-rrd-*; do [ -e "$$crate" ] || continue; ln -sfn "$$crate" debian/cargo_registry/$${crate##*/}; done' "${dir}/debian/rules"
             fi
             if [[ -f "${dir}/docs/Makefile" ]]; then
                 sed -i 's/install: install_manual_pages install_html install_pdf/install: install_manual_pages install_html/' "${dir}/docs/Makefile"
