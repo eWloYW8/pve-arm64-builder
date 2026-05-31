@@ -913,7 +913,7 @@ apply_source_fixes() {
             if [[ -f "${dir}/Makefile" ]]; then
                 sed -i \
                     -e 's/DEB_BUILD_ARCH/DEB_HOST_ARCH/g' \
-                    -e 's#^PERL_INSTALLVENDORARCH !=.*#PERL_INSTALLVENDORARCH := /usr/lib/$(shell dpkg-architecture -qDEB_HOST_MULTIARCH)/perl5/$(shell perl -MConfig -e '\''print $$Config{version};'\'')#' \
+                    -e 's#^PERL_INSTALLVENDORARCH !=.*#PERL_INSTALLVENDORARCH := /usr/lib/$(shell dpkg-architecture -qDEB_HOST_MULTIARCH)/perl5/$(shell perl -MConfig -e '\''my $$v=$$Config{vendorarch}; $$v =~ s!.*/perl5/!!; print $$v;'\'')#' \
                     "${dir}/Makefile"
             fi
             ;;
@@ -1151,7 +1151,7 @@ apply_source_fixes() {
             fi
             if [[ -f "${dir}/src/PVE/Makefile" ]]; then
                 sed -i \
-                    -e 's#^PERL_VENDORARCH=.*#PERL_VENDORARCH=/usr/lib/$(DEB_HOST_MULTIARCH)/perl5/$(shell perl -MConfig -e '\''print $$Config{version};'\'')#' \
+                    -e 's#^PERL_VENDORARCH=.*#PERL_VENDORARCH=/usr/lib/$(DEB_HOST_MULTIARCH)/perl5/$(shell perl -MConfig -e '\''my $$v=$$Config{vendorarch}; $$v =~ s!.*/perl5/!!; print $$v;'\'')#' \
                     -e 's/^CC=gcc$/CC ?= gcc/' \
                     -e 's/pkg-config --/$(PKG_CONFIG) --/g' \
                     "${dir}/src/PVE/Makefile"
