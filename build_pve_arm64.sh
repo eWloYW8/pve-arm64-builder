@@ -9,6 +9,7 @@ LOG_DIR=${LOG_DIR:-${ROOT}/logs/pve-arm64}
 PLAN_FILE=${PLAN_FILE:-${SCRIPT_DIR}/pve-source-plan.txt}
 PLAN_SCRIPT=${PLAN_SCRIPT:-${SCRIPT_DIR}/plan_pve_sources.py}
 RELAX_DEPS_SCRIPT=${RELAX_DEPS_SCRIPT:-${SCRIPT_DIR}/relax_pve_dependencies.py}
+PATCH_DIR=${PATCH_DIR:-${SCRIPT_DIR}/patches}
 MAX_PASSES=${MAX_PASSES:-4}
 JOBS=${JOBS:-$(nproc)}
 BUILD_ARCH=${BUILD_ARCH:-amd64}
@@ -390,6 +391,16 @@ source_subdir_for() {
 }
 
 load_sources() {
+    if [[ -n "${ONLY_SOURCES:-}" ]]; then
+        tr ' ,' '\n\n' <<< "${ONLY_SOURCES}" \
+            | while read -r source; do
+                if [[ -n "${source}" ]] && ! is_excluded_source "${source}"; then
+                    printf '%s\n' "${source}"
+                fi
+            done
+        return
+    fi
+
     if [[ "${REGENERATE_PLAN:-0}" == 1 || ! -s "${PLAN_FILE}" ]]; then
         python3 "${PLAN_SCRIPT}" > "${PLAN_FILE}"
     fi
@@ -576,6 +587,39 @@ reset_git_tree_for_dir() {
     git -C "${git_root}" reset --hard HEAD
     git -C "${git_root}" clean -ffdx
     git -C "${git_root}" submodule update --init --recursive || true
+}
+
+apply_source_patches() {
+    local source=$1
+    local dir=$2
+    local repo repo_name patch
+    local patch_files=()
+
+    [[ -d "${PATCH_DIR}" ]] || return 0
+
+    repo=$(source_to_repo "${source}")
+    repo_name=${repo##*/}
+
+    mapfile -t patch_files < <(
+        find "${PATCH_DIR}" -type f \
+            \( -name "${source}.patch" -o -name "${source}-*.patch" \
+            -o -name "${repo_name}.patch" -o -name "${repo_name}-*.patch" \) \
+            -print | sort
+    )
+
+    ((${#patch_files[@]})) || return 0
+
+    for patch in "${patch_files[@]}"; do
+        log "${source}: applying patch ${patch#${SCRIPT_DIR}/}"
+        if git -C "${dir}" apply --check "${patch}"; then
+            git -C "${dir}" apply "${patch}"
+        elif git -C "${dir}" apply --reverse --check "${patch}" >/dev/null 2>&1; then
+            log "${source}: patch already present ${patch#${SCRIPT_DIR}/}"
+        else
+            git -C "${dir}" apply --check "${patch}"
+            return 1
+        fi
+    done
 }
 
 native_qualify_rust_build_deps() {
@@ -834,6 +878,8 @@ relax_pve_manager_rados_dependency() {
 apply_source_fixes() {
     local source=$1
     local dir=$2
+
+    apply_source_patches "${source}" "${dir}" || return 1
 
     if [[ -f "${dir}/debian/rules" ]] && grep -q '^override_dh_auto_test:' "${dir}/debian/rules"; then
         disable_make_target "${dir}/debian/rules" 'override_dh_auto_test'

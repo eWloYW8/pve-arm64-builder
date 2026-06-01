@@ -1,0 +1,56 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pve-arm64-builder extension <builder@example.invalid>
+Date: Mon, 1 Jun 2026 00:00:00 +0800
+Subject: [PATCH] qemu-server: skip vmgenid on virt-machine architectures
+
+The vmgenid device is not available for all QEMU system targets. In
+particular qemu-system-riscv64 rejects `-device vmgenid,...` with:
+
+  'vmgenid' is not a valid device model name
+
+Avoid auto-generating VM generation IDs for the added virt-machine
+architectures and suppress the device on the QEMU command line if an older
+or cloned configuration still contains the option.
+---
+ src/PVE/API2/Qemu.pm | 5 +++--
+ src/PVE/QemuServer.pm | 2 +-
+ 2 files changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/src/PVE/API2/Qemu.pm b/src/PVE/API2/Qemu.pm
+index 0000000..0000000 100644
+--- a/src/PVE/API2/Qemu.pm
++++ b/src/PVE/API2/Qemu.pm
+@@ -1487,7 +1487,7 @@ __PACKAGE__->register_method({
+ 
+                     if (
+                         (!defined($conf->{vmgenid}) || $conf->{vmgenid} eq '1')
+-                        && $arch ne 'aarch64'
++                        && $arch !~ m/^(?:aarch64|riscv64|loongarch64)$/
+                     ) {
+                         $conf->{vmgenid} = PVE::QemuServer::generate_uuid();
+                     }
+@@ -4551,8 +4551,9 @@ __PACKAGE__->register_method({
+             my $smbios1 = PVE::QemuServer::parse_smbios1($newconf->{smbios1} || '');
+             $smbios1->{uuid} = PVE::QemuServer::generate_uuid();
+             $newconf->{smbios1} = PVE::QemuServer::print_smbios1($smbios1);
+-            # auto generate a new vmgenid only if the option was set for template
+-            if ($newconf->{vmgenid}) {
++            # auto generate a new vmgenid only if the option was set for template and supported
++            my $arch = PVE::QemuServer::Helpers::get_vm_arch($newconf);
++            if ($newconf->{vmgenid} && $arch !~ m/^(?:aarch64|riscv64|loongarch64)$/) {
+                 $newconf->{vmgenid} = PVE::QemuServer::generate_uuid();
+             }
+ 
+diff --git a/src/PVE/QemuServer.pm b/src/PVE/QemuServer.pm
+index 0000000..0000000 100644
+--- a/src/PVE/QemuServer.pm
++++ b/src/PVE/QemuServer.pm
+@@ -3247,7 +3247,7 @@ sub config_to_command {
+         push @$cmd, $fixups->@*;
+     }
+ 
+-    if ($conf->{vmgenid}) {
++    if ($conf->{vmgenid} && !arch_uses_virt_machine($arch)) {
+         push @$devices, '-device', 'vmgenid,guid=' . $conf->{vmgenid};
+     }
+ 

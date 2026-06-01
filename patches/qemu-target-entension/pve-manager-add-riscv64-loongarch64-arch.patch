@@ -1,0 +1,206 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pve-arm64-builder extension <builder@example.invalid>
+Date: Mon, 1 Jun 2026 00:00:00 +0800
+Subject: [PATCH] ui: add riscv64 and loongarch64 VM architectures
+
+Expose riscv64 and loongarch64 in the VM creation UI, give them virt
+machine defaults, restrict them to Linux/Other guest types and UEFI
+firmware, and extend the cluster resource schema for node host
+architectures.
+---
+ PVE/API2/Cluster.pm                  |  2 +-
+ www/manager6/Utils.js                |  3 ++
+ www/manager6/qemu/Architecture.js    | 30 ++++++++++++++++++++++-
+ www/manager6/qemu/OSDefaults.js      | 48 +++++++++++++++++++++++++++++++++++++
+ 4 files changed, 80 insertions(+), 3 deletions(-)
+
+diff --git a/PVE/API2/Cluster.pm b/PVE/API2/Cluster.pm
+index 0000000..0000000 100644
+--- a/PVE/API2/Cluster.pm
++++ b/PVE/API2/Cluster.pm
+@@ -499,7 +499,7 @@ __PACKAGE__->register_method({
+                 'host-arch' => {
+                     description => "The node's CPU architecture. (for type 'node').",
+                     type => 'string',
+-                    enum => [qw(x86_64 aarch64)],
++                    enum => [qw(x86_64 aarch64 riscv64 loongarch64)],
+                     default => 'x86_64',
+                     optional => 1,
+                 },
+diff --git a/www/manager6/Utils.js b/www/manager6/Utils.js
+index 0000000..0000000 100644
+--- a/www/manager6/Utils.js
++++ b/www/manager6/Utils.js
+@@ -546,7 +546,8 @@ Ext.define('PVE.Utils', {
+ 
+         render_qemu_bios: function (value, arch = 'x86_64') {
+             if (!value) {
+-                let defaultBios = arch === 'aarch64' ? 'OVMF (UEFI)' : 'SeaBIOS';
++                let ovmfDefaultArchs = ['aarch64', 'riscv64', 'loongarch64'];
++                let defaultBios = ovmfDefaultArchs.includes(arch) ? 'OVMF (UEFI)' : 'SeaBIOS';
+                 return `${Proxmox.Utils.defaultText} (${defaultBios})`;
+             } else if (value === 'seabios') {
+                 return 'SeaBIOS';
+diff --git a/www/manager6/qemu/Architecture.js b/www/manager6/qemu/Architecture.js
+index 0000000..0000000 100644
+--- a/www/manager6/qemu/Architecture.js
++++ b/www/manager6/qemu/Architecture.js
+@@ -1,5 +1,5 @@
+ /* This file defines the helpers, defaults and limits for various vCPU architectures, such
+- * as x86_64, and aarch64.
++ * as x86_64, aarch64, riscv64 and loongarch64.
+  *
+  * To add a new architecture, add the respective entry in the defaults/renderers and selection.
+  */
+@@ -10,6 +10,8 @@ Ext.define('PVE.qemu.Architecture', {
+         ['__default__', `${Proxmox.Utils.defaultText} (${gettext('Host Architecture')})`],
+         ['x86_64', gettext('x86 (64-bit)')],
+         ['aarch64', gettext('ARM (64-bit)')],
++        ['riscv64', gettext('RISC-V (64-bit)')],
++        ['loongarch64', gettext('LoongArch (64-bit)')],
+     ],
+ 
+     // filter for PVE.Utils.kvm_ostypes
+@@ -22,20 +24,34 @@ Ext.define('PVE.qemu.Architecture', {
+             bases: ['Linux', 'Other'],
+             ostypes: ['l26', 'other'],
+         },
++        riscv64: {
++            bases: ['Linux', 'Other'],
++            ostypes: ['l26', 'other'],
++        },
++        loongarch64: {
++            bases: ['Linux', 'Other'],
++            ostypes: ['l26', 'other'],
++        },
+     },
+ 
+     defaultProcessorModel: {
+         x86_64: 'x86-64-v2-AES',
+         aarch64: 'cortex-a57',
++        riscv64: 'max',
++        loongarch64: 'la464',
+     },
+ 
+     defaultMachines: {
+         x86_64: 'pc',
+         aarch64: 'virt',
++        riscv64: 'virt',
++        loongarch64: 'virt',
+     },
+ 
+     defaultCDDrive: {
+         x86_64: ['ide', 2],
+         aarch64: ['scsi', 2],
++        riscv64: ['scsi', 2],
++        loongarch64: ['scsi', 2],
+     },
+ 
+@@ -50,20 +66,28 @@ Ext.define('PVE.qemu.Architecture', {
+             'pvscsi',
+         ],
+         aarch64: ['virtio-scsi-pci', 'virtio-scsi-single'],
++        riscv64: ['virtio-scsi-pci', 'virtio-scsi-single'],
++        loongarch64: ['virtio-scsi-pci', 'virtio-scsi-single'],
+     },
+ 
+     allowedMachines: {
+         x86_64: ['__default__', 'q35'], // __default__ is i440fx
+         aarch64: ['__default__'], // __default__ is virt
++        riscv64: ['__default__'], // __default__ is virt
++        loongarch64: ['__default__'], // __default__ is virt
+     },
+ 
+     allowedBusses: {
+         x86_64: ['ide', 'sata', 'virtio', 'scsi', 'unused'],
+         aarch64: ['sata', 'virtio', 'scsi', 'unused'],
++        riscv64: ['sata', 'virtio', 'scsi', 'unused'],
++        loongarch64: ['sata', 'virtio', 'scsi', 'unused'],
+     },
+ 
+     allowedFirmware: {
+         x86_64: ['__default__', 'seabios', 'ovmf'], // default is seabios
+         aarch64: ['ovmf'],
++        riscv64: ['ovmf'],
++        loongarch64: ['ovmf'],
+     },
+ 
+@@ -74,6 +98,10 @@ Ext.define('PVE.qemu.Architecture', {
+                 return gettext('x86 (64-bit)');
+             case 'aarch64':
+                 return gettext('ARM (64-bit)');
++            case 'riscv64':
++                return gettext('RISC-V (64-bit)');
++            case 'loongarch64':
++                return gettext('LoongArch (64-bit)');
+             default:
+                 return Proxmox.Utils.unknownText;
+         }
+diff --git a/www/manager6/qemu/OSDefaults.js b/www/manager6/qemu/OSDefaults.js
+index 0000000..0000000 100644
+--- a/www/manager6/qemu/OSDefaults.js
++++ b/www/manager6/qemu/OSDefaults.js
+@@ -68,6 +68,36 @@ Ext.define('PVE.qemu.OSDefaults', {
+                 cputype: 'neoverse-n2',
+                 bios: 'ovmf',
+             },
++
++            riscv64: {
++                // virt machine architectures have no ide, and ovmf can't boot from sata
++                busType: 'scsi',
++                networkCard: 'e1000',
++                busPriority: {
++                    scsi: 4,
++                    sata: 3,
++                    virtio: 2,
++                    ide: 1,
++                },
++                scsihw: 'virtio-scsi-single',
++                cputype: 'max',
++                bios: 'ovmf',
++            },
++
++            loongarch64: {
++                // virt machine architectures have no ide, and ovmf can't boot from sata
++                busType: 'scsi',
++                networkCard: 'e1000',
++                busPriority: {
++                    scsi: 4,
++                    sata: 3,
++                    virtio: 2,
++                    ide: 1,
++                },
++                scsihw: 'virtio-scsi-single',
++                cputype: 'la464',
++                bios: 'ovmf',
++            },
+         };
+ 
+         // virtio-net is in kernel since 2.6.25
+@@ -94,6 +122,24 @@ Ext.define('PVE.qemu.OSDefaults', {
+                     },
+                     networkCard: 'virtio',
+                 },
++                riscv64: {
++                    busPriority: {
++                        scsi: 4,
++                        virtio: 2,
++                        sata: 2,
++                        ide: 1,
++                    },
++                    networkCard: 'virtio',
++                },
++                loongarch64: {
++                    busPriority: {
++                        scsi: 4,
++                        virtio: 2,
++                        sata: 2,
++                        ide: 1,
++                    },
++                    networkCard: 'virtio',
++                },
+             },
+         });
+ 
+-- 
+2.43.0

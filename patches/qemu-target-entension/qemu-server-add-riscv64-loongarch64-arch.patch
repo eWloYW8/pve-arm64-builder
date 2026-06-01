@@ -1,0 +1,427 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pve-arm64-builder extension <builder@example.invalid>
+Date: Mon, 1 Jun 2026 00:00:00 +0800
+Subject: [PATCH] add riscv64 and loongarch64 VM architectures
+
+Extend the VM architecture schema to riscv64 and loongarch64, wire their
+QEMU binaries, default virt machines, firmware files, CPU defaults and
+virt-machine command line handling.
+
+Both new architectures use QEMU's virt machine family. They do not expose
+PVE VM-specific CPU flags, matching the existing aarch64 behaviour.
+---
+ src/PVE/API2/Qemu/CPUFlags.pm     |  4 +-
+ src/PVE/API2/Qemu/Machine.pm      |  2 +
+ src/PVE/QemuServer.pm             | 28 ++++++++++-------
+ src/PVE/QemuServer/CPUConfig.pm   | 65 ++++++++++++++++++++++++++++-----------
+ src/PVE/QemuServer/CPUFlags.pm    | 20 +++++++-----
+ src/PVE/QemuServer/Helpers.pm     |  2 +
+ src/PVE/QemuServer/Machine.pm     |  2 +
+ src/PVE/QemuServer/OVMF.pm        | 10 ++++++
+ src/PVE/QemuServer/PCI.pm         |  6 ++--
+ src/PVE/QemuServer/USB.pm         |  7 ++--
+ 10 files changed, 97 insertions(+), 49 deletions(-)
+
+diff --git a/src/PVE/API2/Qemu/CPUFlags.pm b/src/PVE/API2/Qemu/CPUFlags.pm
+index 0000000..0000000 100644
+--- a/src/PVE/API2/Qemu/CPUFlags.pm
++++ b/src/PVE/API2/Qemu/CPUFlags.pm
+@@ -16,8 +16,8 @@ __PACKAGE__->register_method({
+     path => '',
+     method => 'GET',
+     description =>
+-        "List of available VM-specific CPU flags. Returns an empty list for 'aarch64' "
+-        . "as no VM-specific flags are defined for it yet.",
++        "List of available VM-specific CPU flags. Returns an empty list for non-x86_64 "
++        . "architectures as no VM-specific flags are defined for them yet.",
+     permissions => { user => 'all' },
+     parameters => {
+         additionalProperties => 0,
+diff --git a/src/PVE/API2/Qemu/Machine.pm b/src/PVE/API2/Qemu/Machine.pm
+index 0000000..0000000 100644
+--- a/src/PVE/API2/Qemu/Machine.pm
++++ b/src/PVE/API2/Qemu/Machine.pm
+@@ -42,7 +42,7 @@ __PACKAGE__->register_method({
+                 },
+                 type => {
+                     type => 'string',
+-                    enum => ['q35', 'i440fx'],
++                    enum => ['q35', 'i440fx', 'virt'],
+                     description => "The machine type.",
+                 },
+                 version => {
+diff --git a/src/PVE/QemuServer.pm b/src/PVE/QemuServer.pm
+index 0000000..0000000 100644
+--- a/src/PVE/QemuServer.pm
++++ b/src/PVE/QemuServer.pm
+@@ -1178,6 +1178,11 @@ sub assert_clipboard_config {
+     }
+ }
+ 
++my sub arch_uses_virt_machine {
++    my ($arch) = @_;
++    return $arch =~ m/^(?:aarch64|riscv64|loongarch64)$/;
++}
++
+ sub print_tabletdevice_full {
+     my ($conf, $arch) = @_;
+ 
+@@ -1185,7 +1189,7 @@ sub print_tabletdevice_full {
+ 
+     # we use uhci for old VMs because tablet driver was buggy in older qemu
+     my $usbbus;
+-    if ($q35 || $arch eq 'aarch64') {
++    if ($q35 || arch_uses_virt_machine($arch)) {
+         $usbbus = 'ehci';
+     } else {
+         $usbbus = 'uhci';
+@@ -1197,7 +1201,7 @@ sub print_tabletdevice_full {
+ sub print_keyboarddevice_full {
+     my ($conf, $arch) = @_;
+ 
+-    return if $arch ne 'aarch64';
++    return if !arch_uses_virt_machine($arch);
+ 
+     return "usb-kbd,id=keyboard,bus=ehci.0,port=2";
+ }
+@@ -1472,7 +1476,7 @@ sub print_vga_device {
+     my ($conf, $vga, $arch, $machine_version, $id, $qxlnum, $bridges) = @_;
+ 
+     my $type = $vga_map->{ $vga->{type} };
+-    if ($arch eq 'aarch64' && defined($type) && $type eq 'virtio-vga') {
++    if (arch_uses_virt_machine($arch) && defined($type) && $type eq 'virtio-vga') {
+         $type = 'virtio-gpu';
+     }
+     my $vgamem_mb = $vga->{memory};
+@@ -3047,7 +3051,7 @@ my sub get_vga_properties {
+     $vga->{type} = 'qxl' if $qxlnum;
+ 
+     if (!$vga->{type}) {
+-        if ($arch eq 'aarch64') {
++        if (arch_uses_virt_machine($arch)) {
+             $vga->{type} = 'virtio';
+         } elsif (min_version($machine_version, 2, 9)) {
+             $vga->{type} = (!$winversion || $winversion >= 6) ? 'std' : 'cirrus';
+@@ -3290,10 +3294,10 @@ sub config_to_command {
+         if ($path eq 'socket') {
+             my $socket = "/var/run/qemu-server/${vmid}.serial$i";
+             push @$devices, '-chardev', "socket,id=serial$i,path=$socket,server=on,wait=off";
+-            # On aarch64, serial0 is the UART device. QEMU only allows
+-            # connecting UART devices via the '-serial' command line, as
+-            # the device has a fixed slot on the hardware...
+-            if ($arch eq 'aarch64' && $i == 0) {
++            # On virt machines, serial0 is the UART device. QEMU only allows
++            # connecting UART devices via the '-serial' command line, as the
++            # device has a fixed slot on the hardware.
++            if (arch_uses_virt_machine($arch) && $i == 0) {
+                 push @$devices, '-serial', "chardev:serial$i";
+             } else {
+                 push @$devices, '-device', "isa-serial,chardev=serial$i";
+@@ -4685,10 +4689,10 @@ sub vmconfig_hotplug_pending {
+                 if ($defaults->{tablet}) {
+                     vm_deviceplug($storecfg, $conf, $vmid, 'tablet', $arch, $machine_type);
+                     vm_deviceplug($storecfg, $conf, $vmid, 'keyboard', $arch, $machine_type)
+-                        if $arch eq 'aarch64';
++                        if arch_uses_virt_machine($arch);
+                 } else {
+                     vm_deviceunplug($vmid, $conf, 'tablet');
+-                    vm_deviceunplug($vmid, $conf, 'keyboard') if $arch eq 'aarch64';
++                    vm_deviceunplug($vmid, $conf, 'keyboard') if arch_uses_virt_machine($arch);
+                 }
+             } elsif ($opt =~ m/^usb(\d+)$/) {
+                 my $index = $1;
+@@ -4756,10 +4760,10 @@ sub vmconfig_hotplug_pending {
+                 if ($value == 1) {
+                     vm_deviceplug($storecfg, $conf, $vmid, 'tablet', $arch, $machine_type);
+                     vm_deviceplug($storecfg, $conf, $vmid, 'keyboard', $arch, $machine_type)
+-                        if $arch eq 'aarch64';
++                        if arch_uses_virt_machine($arch);
+                 } elsif ($value == 0) {
+                     vm_deviceunplug($vmid, $conf, 'tablet');
+-                    vm_deviceunplug($vmid, $conf, 'keyboard') if $arch eq 'aarch64';
++                    vm_deviceunplug($vmid, $conf, 'keyboard') if arch_uses_virt_machine($arch);
+                 }
+             } elsif ($opt =~ m/^usb(\d+)$/) {
+                 my $index = $1;
+diff --git a/src/PVE/QemuServer/CPUConfig.pm b/src/PVE/QemuServer/CPUConfig.pm
+index 0000000..0000000 100644
+--- a/src/PVE/QemuServer/CPUConfig.pm
++++ b/src/PVE/QemuServer/CPUConfig.pm
+@@ -29,7 +29,7 @@ our @EXPORT_OK = qw(
+ my $arch_desc = {
+     description => "Virtual processor architecture. Defaults to the host architecture.",
+     type => 'string',
+-    enum => [qw(x86_64 aarch64)],
++    enum => [qw(x86_64 aarch64 riscv64 loongarch64)],
+ };
+ PVE::JSONSchema::register_standard_option("pve-qm-cpu-arch", $arch_desc);
+ 
+@@ -84,6 +84,8 @@ my $builtin_models_by_arch = {
+         },
+     },
+     aarch64 => {},
++    riscv64 => {},
++    loongarch64 => {},
+ };
+ 
+ my $all_builtin_models;
+@@ -116,19 +118,35 @@ my $all_cpu_models;
+ # helper to make it easier for testing
+ # initializes both '$cpu_models_by_arch' and '$all_cpu_models'
+ sub initialize_cpu_models {
+-    my $cpu_models_x86_64_file = '/usr/share/kvm/cpu-models-x86_64.json';
+-    my $cpu_models_aarch64_file = '/usr/share/kvm/cpu-models-aarch64.json';
+-
+-    if (-f $cpu_models_x86_64_file) { # QEMU package is new enough to ship static model files
+-        my $json_text = PVE::File::file_get_contents($cpu_models_x86_64_file);
+-        ($json_text) = $json_text =~ /(.*)/s; # untaint multi-line string
+-        $cpu_models_by_arch->{'x86_64'} = eval { decode_json($json_text) }
+-            or die "unable to decode contents of '$cpu_models_x86_64_file' - $@\n";
+-
+-        $json_text = PVE::File::file_get_contents($cpu_models_aarch64_file);
+-        ($json_text) = $json_text =~ /(.*)/s; # untaint multi-line string
+-        $cpu_models_by_arch->{'aarch64'} = eval { decode_json($json_text) }
+-            or die "unable to decode contents of '$cpu_models_aarch64_file' - $@\n";
++    my $cpu_model_files = {
++        x86_64 => '/usr/share/kvm/cpu-models-x86_64.json',
++        aarch64 => '/usr/share/kvm/cpu-models-aarch64.json',
++        riscv64 => '/usr/share/kvm/cpu-models-riscv64.json',
++        loongarch64 => '/usr/share/kvm/cpu-models-loongarch64.json',
++    };
++
++    my $fallback_cpu_models_by_arch = {
++        riscv64 => {
++            max => 'default',
++            rv64 => 'RISC-V',
++        },
++        loongarch64 => {
++            la464 => 'LoongArch',
++        },
++    };
++
++    if (-f $cpu_model_files->{x86_64}) { # QEMU package is new enough to ship static model files
++        for my $arch (sort keys $cpu_model_files->%*) {
++            my $file = $cpu_model_files->{$arch};
++            if (-f $file) {
++                my $json_text = PVE::File::file_get_contents($file);
++                ($json_text) = $json_text =~ /(.*)/s; # untaint multi-line string
++                $cpu_models_by_arch->{$arch} = eval { decode_json($json_text) }
++                    or die "unable to decode contents of '$file' - $@\n";
++            } else {
++                $cpu_models_by_arch->{$arch} = $fallback_cpu_models_by_arch->{$arch} // {};
++            }
++        }
+     } else { # FIXME: MAJOR VERSION: remove hard-coded list
+         $cpu_models_by_arch = {
+             x86_64 => {
+@@ -242,5 +260,12 @@ sub initialize_cpu_models {
+                 max => 'default',
+             },
++            riscv64 => {
++                max => 'default',
++                rv64 => 'RISC-V',
++            },
++            loongarch64 => {
++                la464 => 'LoongArch',
++            },
+         };
+     }
+ 
+@@ -268,7 +293,7 @@ keys. The associated value is the vendor of the CPU model. The parameter C<$arch>
+ 
+ sub get_cpu_models_by_arch($arch) {
+     initialize_cpu_models() if !defined($cpu_models_by_arch);
+-    return $cpu_models_by_arch->{$arch};
++    return $cpu_models_by_arch->{$arch} // {};
+ }
+ 
+ =head3 get_all_cpu_models
+@@ -587,7 +612,7 @@ sub get_cpu_models($include_custom, $arch = undef) {
+             };
+     }
+ 
+-    my $builtin_models = $builtin_models_by_arch->{$arch};
++    my $builtin_models = $builtin_models_by_arch->{$arch} // {};
+     for my $model (keys %{$builtin_models}) {
+         my $reported_model = $builtin_models->{$model}->{'reported-model'};
+         my $vendor = $cpu_vendor_list->{$reported_model};
+@@ -856,7 +881,7 @@ sub get_cpu_options(
+             or die "Cannot parse cpu description: $cpu_prop_str\n";
+ 
+         $cputype = $cpu->{cputype};
+-        my $builtin_models = $builtin_models_by_arch->{$arch};
++        my $builtin_models = $builtin_models_by_arch->{$arch} // {};
+         if (my $model = $builtin_models->{$cputype}) {
+             $cputype = $model->{'reported-model'};
+             $builtin_cpu->{flags} = $model->{'flags'};
+@@ -1112,6 +1137,8 @@ sub get_default_cpu_type($arch, $kvm) {
+ 
+     my $cputype = $kvm ? 'kvm64' : 'qemu64';
+     $cputype = 'cortex-a57' if $arch eq 'aarch64';
++    $cputype = 'max' if $arch eq 'riscv64';
++    $cputype = 'la464' if $arch eq 'loongarch64';
+ 
+     return $cputype;
+ }
+@@ -1132,17 +1159,17 @@ sub get_cpu_bitness($cpu_prop_str, $arch = undef) {
+ 
+         $cputype = $cpu->{cputype};
+ 
+-        my $builtin_models = $builtin_models_by_arch->{$arch};
++        my $builtin_models = $builtin_models_by_arch->{$arch} // {};
+         if (my $model = $builtin_models->{$cputype}) {
+             $cputype = $model->{'reported-model'};
+         } elsif (is_custom_model($cputype)) {
+             my $custom_cpu = get_custom_model($cputype);
+             $cputype = $custom_cpu->{'reported-model'} // $cpu_fmt->{'reported-model'}->{default};
+         }
+     }
+ 
+     return $cputypes_32bit->{$cputype} ? 32 : 64 if $arch eq 'x86_64';
+-    return 64 if $arch eq 'aarch64';
++    return 64 if $arch =~ m/^(?:aarch64|riscv64|loongarch64)$/;
+ 
+     die "unsupported architecture '$arch'\n";
+ }
+diff --git a/src/PVE/QemuServer/CPUFlags.pm b/src/PVE/QemuServer/CPUFlags.pm
+index 0000000..0000000 100644
+--- a/src/PVE/QemuServer/CPUFlags.pm
++++ b/src/PVE/QemuServer/CPUFlags.pm
+@@ -82,6 +82,8 @@ my $supported_vm_specific_cpu_flags_by_arch = {
+         },
+     ],
+     aarch64 => [],
++    riscv64 => [],
++    loongarch64 => [],
+ };
+ 
+ my $all_supported_vm_specific_cpu_flags = {};
+@@ -213,12 +215,12 @@ When set to 1, return only VM-specific flags, otherwise return all flags.
+ 
+ =item C<$arch> (C<x86_64> | C<aarch64>)
+ 
+-Specifies which architecture to query flags for. Note that in both scopes (VM-specific
+-and all), C<aarch64> returns empty lists: this is intended for VM-specific flags, as no
+-C<aarch64> flags are currently settable for a specific VM, however it is a known
+-limitation for the "all" scope. PVE does not currently ship a list of understood flags
+-for C<aarch64>, as it is not as trivial to obtain as for C<x86_64>, whose flags are easy
+-to parse from QEMU's C<-cpu help> output.
++Specifies which architecture to query flags for. Note that in both scopes (VM-specific and
++all), non-x86_64 architectures return empty lists: this is intended for VM-specific flags,
++as no non-x86_64 flags are currently settable for a specific VM, however it is a known
++limitation for the "all" scope. PVE does not currently ship a list of understood flags for
++those architectures, as it is not as trivial to obtain as for C<x86_64>, whose flags are
++easy to parse from QEMU's C<-cpu help> output.
+ 
+ =back
+ 
+@@ -250,10 +251,10 @@ C<supported-on> list populated from nodes that report supporting C<svm> or C<vmx>
+ =cut
+ 
+ sub query_available_cpu_flags($accel, $vm_specific, $arch) {
+-    # TODO: a way to get supported flags for aarch64. This is not done because PVE
+-    # does not currently ship a list of understood flags for aarch64, as it's more difficult
++    # TODO: a way to get supported flags for non-x86_64 architectures. This is not done because PVE
++    # does not currently ship a list of understood flags for them, as it's more difficult
+     # to obtain during QEMU build - for x86_64, qemu -cpu help will just list the flags.
+-    return [] if $arch eq 'aarch64';
++    return [] if $arch ne 'x86_64';
+ 
+     my $descriptions = flag_descriptions($arch);
+     my $base =
+diff --git a/src/PVE/QemuServer/Helpers.pm b/src/PVE/QemuServer/Helpers.pm
+index 0000000..0000000 100644
+--- a/src/PVE/QemuServer/Helpers.pm
++++ b/src/PVE/QemuServer/Helpers.pm
+@@ -27,6 +27,8 @@ my $nodename = PVE::INotify::nodename();
+ 
+ my $arch_to_qemu_binary = {
+     aarch64 => '/usr/bin/qemu-system-aarch64',
++    loongarch64 => '/usr/bin/qemu-system-loongarch64',
++    riscv64 => '/usr/bin/qemu-system-riscv64',
+     x86_64 => '/usr/bin/qemu-system-x86_64',
+ };
+ 
+diff --git a/src/PVE/QemuServer/Machine.pm b/src/PVE/QemuServer/Machine.pm
+index 0000000..0000000 100644
+--- a/src/PVE/QemuServer/Machine.pm
++++ b/src/PVE/QemuServer/Machine.pm
+@@ -117,5 +117,7 @@ my $default_machines = {
+     x86_64 => 'pc',
+     aarch64 => 'virt',
++    riscv64 => 'virt',
++    loongarch64 => 'virt',
+ };
+ 
+ sub default_machine_for_arch {
+diff --git a/src/PVE/QemuServer/OVMF.pm b/src/PVE/QemuServer/OVMF.pm
+index 0000000..0000000 100644
+--- a/src/PVE/QemuServer/OVMF.pm
++++ b/src/PVE/QemuServer/OVMF.pm
+@@ -53,6 +53,16 @@ my $OVMF = {
+             "$EDK2_FW_BASE/AAVMF_CODE.fd", "$EDK2_FW_BASE/AAVMF_VARS.fd",
+         ],
+     },
++    riscv64 => {
++        default => [
++            "/usr/share/kvm/edk2-riscv-code.fd", "/usr/share/kvm/edk2-riscv-vars.fd",
++        ],
++    },
++    loongarch64 => {
++        default => [
++            "/usr/share/kvm/edk2-loongarch64-code.fd", "/usr/share/kvm/edk2-loongarch64-vars.fd",
++        ],
++    },
+ };
+ 
+ my $temporary_efidisk_dir = '/run/qemu-server/efidisk';
+diff --git a/src/PVE/QemuServer/PCI.pm b/src/PVE/QemuServer/PCI.pm
+index 0000000..0000000 100644
+--- a/src/PVE/QemuServer/PCI.pm
++++ b/src/PVE/QemuServer/PCI.pm
+@@ -295,15 +295,15 @@ my $get_addr_mapping_from_id = sub {
+ sub print_pci_addr {
+     my ($id, $bridges, $arch) = @_;
+ 
+-    die "aarch64 cannot use IDE devices\n" if $arch eq 'aarch64' && $id =~ /^ide/;
++    die "$arch cannot use IDE devices\n" if $arch =~ m/^(?:aarch64|riscv64|loongarch64)$/ && $id =~ /^ide/;
+ 
+     my $res = '';
+ 
+     my $map = get_pci_addr_map();
+     if (my $d = $get_addr_mapping_from_id->($map, $id)) {
+-        # Using same bus slots on all HW, so we need to check special cases here. For aarch64, the
++        # Using same bus slots on all HW, so we need to check special cases here. For virt machines, the
+         # virt machine has an initial pcie.0. The other pci bridges that get added are called pci.N.
+-        my $busname = $arch eq 'aarch64' && $d->{bus} eq 0 ? 'pcie' : 'pci';
++        my $busname = ($arch =~ m/^(?:aarch64|riscv64|loongarch64)$/ && $d->{bus} eq 0) ? 'pcie' : 'pci';
+ 
+         $res = ",bus=$busname.$d->{bus},addr=$d->{addr}";
+         $bridges->{ $d->{bus} } = 1 if $bridges;
+diff --git a/src/PVE/QemuServer/USB.pm b/src/PVE/QemuServer/USB.pm
+index 0000000..0000000 100644
+--- a/src/PVE/QemuServer/USB.pm
++++ b/src/PVE/QemuServer/USB.pm
+@@ -133,7 +133,8 @@ sub get_usb_controllers {
+         && ($ostype eq 'l26' || windows_version($ostype) > 7);
+     my $is_q35 = PVE::QemuServer::Machine::machine_type_is_q35($conf);
+ 
+-    if ($arch eq 'aarch64') {
++    my $is_virt_machine_arch = $arch =~ m/^(?:aarch64|riscv64|loongarch64)$/;
++    if ($is_virt_machine_arch) {
+         $pciaddr = print_pci_addr('ehci', $bridges, $arch);
+         push @$devices, '-device', "usb-ehci,id=ehci$pciaddr";
+     } elsif (!$is_q35) {
+@@ -152,8 +153,8 @@ sub get_usb_controllers {
+         $use_usb2 = 1 if !$d->{usb3};
+     }
+ 
+-    if (!$use_qemu_xhci && !$is_q35 && $use_usb2 && $arch ne 'aarch64') {
+-        # include usb device config if still on x86 before-xhci machines and if USB 3 is not used
++    if (!$use_qemu_xhci && !$is_q35 && $use_usb2 && !$is_virt_machine_arch) {
++        # include usb device config if still on x86 before-xhci machines and USB 3 is not used
+         push @$devices, '-readconfig', '/usr/share/qemu-server/pve-usb.cfg';
+     }
+ 
+-- 
+2.43.0

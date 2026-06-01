@@ -1,0 +1,169 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pve-arm64-builder extension <builder@example.invalid>
+Date: Mon, 1 Jun 2026 00:00:00 +0800
+Subject: [PATCH] build: add riscv64 and loongarch64 softmmu targets
+
+Build the riscv64-softmmu and loongarch64-softmmu binaries alongside
+the existing x86_64 and aarch64 system emulators, and ship their static
+machine and CPU model metadata for qemu-server.
+
+The RISC-V and LoongArch virt machines are currently unversioned in QEMU,
+so allow the machine parser to keep an unversioned virt entry instead of
+failing when no versioned virt-* machines are reported.
+---
+ debian/control             |  4 +++-
+ debian/parse-cpu-models.pl | 12 +++++++++++-
+ debian/parse-machines.pl   | 22 ++++++++++++++++------
+ debian/pve-qemu-kvm.links  |  2 ++
+ debian/rules               | 10 +++++++++-
+ 5 files changed, 41 insertions(+), 9 deletions(-)
+
+diff --git a/debian/control b/debian/control
+index 0000000..0000000 100644
+--- a/debian/control
++++ b/debian/control
+@@ -59,14 +59,16 @@ Conflicts: kvm,
+            qemu-system-arm,
+            qemu-system-common,
+            qemu-system-data,
++           qemu-system-misc,
+            qemu-system-x86,
+            qemu-utils,
+-Provides: qemu-system-arm, qemu-system-x86, qemu-utils,
++Provides: qemu-system-arm, qemu-system-misc, qemu-system-x86, qemu-utils,
+ Replaces: pve-kvm,
+           pve-qemu-kvm-2.6.18,
+           qemu-system-arm,
++          qemu-system-misc,
+           qemu-system-x86,
+           qemu-utils,
+ Breaks: qemu-server (<= 8.0.6)
+ Description: Full virtualization on x86 hardware
+  Using KVM, one can run multiple virtual PCs, each running unmodified Linux or
+diff --git a/debian/parse-cpu-models.pl b/debian/parse-cpu-models.pl
+index 0000000..0000000 100755
+--- a/debian/parse-cpu-models.pl
++++ b/debian/parse-cpu-models.pl
+@@ -9,6 +9,7 @@ use JSON qw(to_json);
+ 
+ my @skip_models = (
+     'base',
++    'any',
+     'host', # added in qemu-server depending on arch
+ 
+     # x86_64
+@@ -76,8 +77,14 @@ while (my $line = <STDIN>) {
+         } elsif ($model =~ m/^(a64fx|cortex-|neoverse-).*$/) {
+             $cpu_models->{$model} = 'ARM';
+             next;
++        } elsif ($model =~ m/^(?:lowrisc-ibex|max32|rv(?:32|64)[ie]?|x-rv128|rva\d+[us]64|sifive-[eu]\d*|shakti-c|thead-c906|tt-ascalon|veyron-v1|xiangshan-(?:nanhu|kunminghu)|mips-p8700)$/) {
++            $cpu_models->{$model} = 'RISC-V';
++            next;
++        } elsif ($model =~ m/^la\d+$/) {
++            $cpu_models->{$model} = 'LoongArch';
++            next;
+         }
+-        die "unable to deal with line '$line' - implement me"
++        die "unable to deal with line '$line' - implement me"
+     } elsif ($info =~ m/^\(deprecated\)$/) {
+         next;
+     } elsif ($info =~ m/^\(alias configured by machine type\)/) {
+@@ -96,6 +107,9 @@ while (my $line = <STDIN>) {
+     } elsif ($info =~ m/^(Intel|Genuine Intel|Westmere)/) {
+         $cpu_models->{$model} = 'GenuineIntel';
+         next;
++    } elsif ($info =~ m/^Loongson/) {
++        $cpu_models->{$model} = 'LoongArch';
++        next;
+     }
+ 
+     die "unable to deal with line '$line' - implement me";
+diff --git a/debian/parse-machines.pl b/debian/parse-machines.pl
+index 0000000..0000000 100755
+--- a/debian/parse-machines.pl
++++ b/debian/parse-machines.pl
+@@ -14,12 +14,22 @@ while (<STDIN>) {
+ 
+     s/^\s+//;
+     my @machine = split(/\s+/);
+-    next if $machine[0] !~ m/^pc-(i440fx|q35)-(.+)$/ && $machine[0] !~ m/^(virt)-(.+)$/;
+-    push @$machines, {
+-        'id' => $machine[0],
+-        'type' => $1,
+-        'version' => $2,
+-    };
++    my $id = $machine[0] // next;
++
++    if ($id =~ m/^pc-(i440fx|q35)-(.+)$/ || $id =~ m/^(virt)-(.+)$/) {
++        push @$machines, {
++            'id' => $id,
++            'type' => $1,
++            'version' => $2,
++        };
++    } elsif ($id eq 'virt') {
++        # RISC-V and LoongArch currently expose only an unversioned virt machine.
++        push @$machines, {
++            'id' => $id,
++            'type' => 'virt',
++            'version' => '0.0',
++        };
++    }
+ }
+ 
+ die "no QEMU machine types detected from STDIN input" if scalar (@$machines) <= 0;
+diff --git a/debian/pve-qemu-kvm.links b/debian/pve-qemu-kvm.links
+index 0000000..0000000 100644
+--- a/debian/pve-qemu-kvm.links
++++ b/debian/pve-qemu-kvm.links
+@@ -9,5 +9,7 @@ usr/bin/qemu-system-x86_64 usr/bin/qemu-system-i386
+ usr/share/man/man1/qemu.1  usr/share/man/man1/kvm.1
+ usr/share/man/man1/qemu.1  usr/share/man/man1/qemu-system-aarch64.1
+ usr/share/man/man1/qemu.1  usr/share/man/man1/qemu-system-arm.1
++usr/share/man/man1/qemu.1  usr/share/man/man1/qemu-system-loongarch64.1
++usr/share/man/man1/qemu.1  usr/share/man/man1/qemu-system-riscv64.1
+ usr/share/man/man1/qemu.1  usr/share/man/man1/qemu-system-i386.1
+ usr/share/man/man1/qemu.1  usr/share/man/man1/qemu-system-x86_64.1
+diff --git a/debian/rules b/debian/rules
+index 0000000..0000000 100755
+--- a/debian/rules
++++ b/debian/rules
+@@ -14,9 +14,13 @@ flagfile := $(destdir)/usr/share/kvm/recognized-CPUID-flags-x86_64
+ 
+ machine_file_x86_64 := $(destdir)/usr/share/kvm/machine-versions-x86_64.json
+ machine_file_aarch64 := $(destdir)/usr/share/kvm/machine-versions-aarch64.json
++machine_file_riscv64 := $(destdir)/usr/share/kvm/machine-versions-riscv64.json
++machine_file_loongarch64 := $(destdir)/usr/share/kvm/machine-versions-loongarch64.json
+ 
+ cpu_models_file_x86_64 := $(destdir)/usr/share/kvm/cpu-models-x86_64.json
+ cpu_models_file_aarch64 := $(destdir)/usr/share/kvm/cpu-models-aarch64.json
++cpu_models_file_riscv64 := $(destdir)/usr/share/kvm/cpu-models-riscv64.json
++cpu_models_file_loongarch64 := $(destdir)/usr/share/kvm/cpu-models-loongarch64.json
+ 
+ # default QEMU out-of-tree build directory is ./build
+ BUILDDIR=build
+@@ -49,7 +53,7 @@ ifneq "$(wildcard /usr/share/misc/config.guess)" ""
+ 	    --localstatedir=/var \
+ 	    --prefix=/usr \
+ 	    --sysconfdir=/etc \
+-	    --target-list=x86_64-softmmu,aarch64-softmmu \
++	    --target-list=x86_64-softmmu,aarch64-softmmu,riscv64-softmmu,loongarch64-softmmu \
+ 	    --with-suffix="kvm" \
+ 	    --with-pkgversion="${DEB_SOURCE}_${DEB_VERSION_UPSTREAM_REVISION}" \
+ 	    --audio-drv-list="alsa" \
+@@ -131,10 +135,14 @@ install: build
+ 	# Supported machine versions are static for a given QEMU binary.
+ 	$(destdir)/usr/bin/qemu-system-x86_64 -machine help | ./debian/parse-machines.pl > $(machine_file_x86_64)
+ 	$(destdir)/usr/bin/qemu-system-aarch64 -machine help | ./debian/parse-machines.pl > $(machine_file_aarch64)
++	$(destdir)/usr/bin/qemu-system-riscv64 -machine help | ./debian/parse-machines.pl > $(machine_file_riscv64)
++	$(destdir)/usr/bin/qemu-system-loongarch64 -machine help | ./debian/parse-machines.pl > $(machine_file_loongarch64)
+ 
+ 	# Supported CPU models are static for a given QEMU binary.
+ 	$(destdir)/usr/bin/qemu-system-x86_64 -cpu help | ./debian/parse-cpu-models.pl > $(cpu_models_file_x86_64)
+ 	$(destdir)/usr/bin/qemu-system-aarch64 -cpu help | ./debian/parse-cpu-models.pl > $(cpu_models_file_aarch64)
++	$(destdir)/usr/bin/qemu-system-riscv64 -cpu help | ./debian/parse-cpu-models.pl > $(cpu_models_file_riscv64)
++	$(destdir)/usr/bin/qemu-system-loongarch64 -cpu help | ./debian/parse-cpu-models.pl > $(cpu_models_file_loongarch64)
+ 	# NOTE: If the diff fails here after upgrading the QEMU submodule, check which new models
+ 	# are to be picked up and which are to be excluded, adapt to other changes and commit the
+ 	# new expected files (and parse-cpu-models.pl script).
+-- 
+2.43.0
