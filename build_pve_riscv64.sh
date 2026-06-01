@@ -562,6 +562,24 @@ install_build_deps_all() {
     install_build_deps_all_control "${dir}/debian/control"
 }
 
+install_lxc_apparmor_cross_deps() {
+    local native_version
+
+    native_version=$(dpkg-query -W -f='${Version}' "libapparmor1:${BUILD_ARCH}" 2>/dev/null \
+        || dpkg-query -W -f='${Version}' libapparmor1 2>/dev/null \
+        || true)
+
+    if [[ -z "${native_version}" ]]; then
+        run_root apt-get install -y --no-install-recommends \
+            "libapparmor-dev:${HOST_ARCH}"
+        return
+    fi
+
+    run_root apt-get install -y --allow-downgrades --no-install-recommends \
+        "libapparmor1:${HOST_ARCH}=${native_version}" \
+        "libapparmor-dev:${HOST_ARCH}=${native_version}"
+}
+
 control_file_for_dir() {
     local dir=$1
     local control="${dir}/debian/control"
@@ -1503,6 +1521,9 @@ build_source() {
 
     if has_proxmox_wrapper "${dir}"; then
         control=$(control_file_for_dir "${dir}")
+        if [[ "${source}" == "lxc-pve" ]]; then
+            install_lxc_apparmor_cross_deps
+        fi
         if ! install_wrapper_build_deps "${dir}"; then
             log "${source}: continuing after build-deps install failure"
         fi
@@ -1526,6 +1547,9 @@ build_source() {
     fi
 
     if control_has_arch_any_for_host "${dir}/debian/control"; then
+        if [[ "${source}" == "lxc-pve" ]]; then
+            install_lxc_apparmor_cross_deps
+        fi
         if ! install_build_deps_any "${dir}"; then
             log "${source}: continuing after arch-any build-deps install failure"
         fi
